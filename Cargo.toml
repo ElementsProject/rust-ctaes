@@ -1,6 +1,6 @@
 [package]
 name = "ctaes-rs"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Philip Robinson <probinson@blockstream.com>"]
 license = "MIT"
 homepage = "https://github.com/ElementsProject/rust-ctaes/"
@@ -11,11 +11,11 @@ readme = "README.md"
 edition = "2021"
 
 [dependencies]
-thiserror = "1.0.30"
+thiserror = "2"
 zeroize = "1.8.1"
 
 [dev-dependencies]
-hex-conservative = "0.2.1"
+hex-conservative = "0.2"
 
 [build-dependencies]
 cc = "^1.0"
