@@ -1,6 +1,7 @@
-# rust-ctaes
+# ctaes-rs
 
-A Rust FFI wrapper for CTAES library from <https://github.com/bitcoin-core/ctaes>
+Rust bindings and API for CTAES (constant-time AES implementation from Bitcoin Core found at
+https://github.com/bitcoin-core/ctaes")
 
 The CTAES Library provides a constant time implementation of the AES algorithm. For completeness
 this crate provides the interface to the AES-ECB methods, but they should not be used. Rather,

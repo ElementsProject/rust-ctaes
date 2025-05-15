@@ -10,15 +10,17 @@ jobs:
     name: Test on latest Rust
     runs-on: ubuntu-latest
     steps:
-      - name: "Rust Version"
-        run: rustc --version
-      
       - name: "Checkout code"
         uses: actions/checkout@v4
       
+      - name: "Select toolchain"
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: "Rust Version"
+        run: rustc --version
+
       - name: Setup
         run: |
-          rustc --version
           sudo apt-get update && sudo apt-get install -y valgrind
           cargo install cargo-valgrind
           
@@ -26,6 +28,7 @@ jobs:
         run: |
           cargo valgrind test
           cargo test
+          cargo test --doc
           
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -37,19 +40,24 @@ jobs:
   test-msrv:
     name: Test on Rust MSRV (1.63.0)
     runs-on: ubuntu-latest
-    container:
-      image: rust:1.63.0
     steps:
       - uses: actions/checkout@v4
       
+      - name: "Select toolchain"
+        uses: dtolnay/rust-toolchain@1.63.0
+
+      - name: "Rust Version"
+        run: rustc --version
+
       - name: Setup
         run: |
-          rustc --version
-          apt-get update && apt-get install -y valgrind
+          sudo apt-get update && sudo apt-get install -y valgrind
           cargo install cargo-valgrind --version 2.0.0
           
       - name: Run tests
         run: |
+          rm Cargo.lock
+          cargo +1.63.0 generate-lockfile
           cargo valgrind test
           cargo test
           

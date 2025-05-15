@@ -1,10 +1,8 @@
-/*********************************************************************
- * Copyright (c) 2023 Blockstream                                     *
- * Distributed under the MIT software license, see the accompanying   *
- * file COPYING or https://opensource.org/licenses/mit-license.php.   *
- **********************************************************************/
+// Copyright (c) 2023 Blockstream
+// Distributed under the MIT software license, see the accompanying
+// file COPYING or https://opensource.org/licenses/mit-license.php.
 
-use Error;
+use crate::Error;
 
 /// Trait defining interface for a Padding implementation
 pub trait Padding {
@@ -98,8 +96,8 @@ impl Padding for Pkcs7 {
 
 #[cfg(test)]
 mod test {
-    use padding::{Padding, Pkcs7, ZeroPadding};
-    use Error;
+    use crate::padding::{Padding, Pkcs7, ZeroPadding};
+    use crate::Error;
 
     #[test]
     fn test_zero_padding() {

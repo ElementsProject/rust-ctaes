@@ -1,4 +1,9 @@
-//! A Rust FFI wrapper for CTAES library from <https://github.com/bitcoin-core/ctaes>
+// Copyright (c) 2023 Blockstream
+// Distributed under the MIT software license, see the accompanying
+// file COPYING or https://opensource.org/licenses/mit-license.php.
+
+//! Rust bindings and API for CTAES (constant-time AES implementation from Bitcoin Core found at
+//! https://github.com/bitcoin-core/ctaes)
 //!
 //! The CTAES Library provides a constant time implementation of the AES algorithm. For completeness
 //! this crate provides the interface to the AES-ECB methods, but they should not be used. Rather,
@@ -12,7 +17,7 @@
 //! ```
 //! extern crate hex_conservative;
 //! use hex_conservative::FromHex;
-//! use ctaes::{Padding, Pkcs7, AesCbcBlockCipher, Aes128Cbc};
+//! use ctaes_rs::{Padding, Pkcs7, AesCbcBlockCipher, Aes128Cbc};
 //!
 //! let key = <[u8; 16]>::from_hex("2b7e151628aed2a6abf7158809cf4f3c").unwrap();
 //! let iv = <[u8; 16]>::from_hex("000102030405060708090a0b0c0d0e0f").unwrap();
@@ -396,10 +401,10 @@ impl AesCbcBlockCipher for Aes256Cbc<'_> {}
 
 #[cfg(test)]
 mod test {
-    use AES128_KEY_LENGTH;
-    use AES192_KEY_LENGTH;
-    use AES256_KEY_LENGTH;
-    use {
+    use crate::AES128_KEY_LENGTH;
+    use crate::AES192_KEY_LENGTH;
+    use crate::AES256_KEY_LENGTH;
+    use crate::{
         Aes128, Aes128Cbc, Aes192, Aes192Cbc, Aes256, Aes256Cbc, AesBlockCipher, AesCbcBlockCipher,
         Error,
     };

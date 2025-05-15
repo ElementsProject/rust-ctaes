@@ -1,9 +1,14 @@
 [package]
-name = "ctaes"
+name = "ctaes-rs"
 version = "0.1.0"
-authors = ["Blockstream <support@blockstream.com>"]
-links = "ctaes"
-edition = "2015"
+authors = ["Philip Robinson <probinson@blockstream.com>"]
+license = "MIT"
+homepage = "https://github.com/ElementsProject/rust-ctaes/"
+repository = "https://github.com/ElementsProject/rust-ctaes/"
+description = "Rust bindings and API for CTAES a constant-time AES implementation from Bitcoin Core https://github.com/bitcoin-core/ctaes"
+keywords = [ "crypto", "bitcoin", "aes" ]
+readme = "README.md"
+edition = "2021"
 
 [dependencies]
 thiserror = "1.0.30"

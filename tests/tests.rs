@@ -4,12 +4,11 @@
 * file COPYING or https://opensource.org/licenses/mit-license.php.   *
 **********************************************************************/
 
-extern crate ctaes;
 extern crate hex_conservative;
 
-use ctaes::Aes192Cbc;
-use ctaes::Aes256Cbc;
-use ctaes::{Aes128, Aes128Cbc, Aes192, Aes256, AesBlockCipher, AesCbcBlockCipher};
+use ctaes_rs::Aes192Cbc;
+use ctaes_rs::Aes256Cbc;
+use ctaes_rs::{Aes128, Aes128Cbc, Aes192, Aes256, AesBlockCipher, AesCbcBlockCipher};
 use hex_conservative::FromHex;
 
 struct AesTestVector {
