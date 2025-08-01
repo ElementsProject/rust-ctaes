@@ -81,14 +81,14 @@ pub trait AesBlockCipher: FfiAesCipher {
 
     /// Decrypt the contents of `ciphertext` and place the result in the `plaintext` out parameter
     fn decrypt(&self, ciphertext: &[u8], plaintext: &mut [u8]) -> Result<(), Error> {
-        if plaintext.len() % AES_BLOCK_SIZE != 0 {
+        if ciphertext.len() % AES_BLOCK_SIZE != 0 {
             return Err(Error::NonBlockSizeAlignedBuffer);
         }
         if plaintext.len() < ciphertext.len() {
             return Err(Error::InsufficientBufferSize);
         }
 
-        let num_blocks = plaintext.len() / AES_BLOCK_SIZE;
+        let num_blocks = ciphertext.len() / AES_BLOCK_SIZE;
         self.ffi_decrypt(num_blocks, plaintext, ciphertext);
 
         Ok(())
@@ -238,14 +238,14 @@ pub trait AesCbcBlockCipher: FfiAesCbcCipher {
     }
 
     fn decrypt(&self, ciphertext: &[u8], plaintext: &mut [u8]) -> Result<(), Error> {
-        if plaintext.len() % AES_BLOCK_SIZE != 0 {
+        if ciphertext.len() % AES_BLOCK_SIZE != 0 {
             return Err(Error::NonBlockSizeAlignedBuffer);
         }
         if plaintext.len() < ciphertext.len() {
             return Err(Error::InsufficientBufferSize);
         }
 
-        let num_blocks = plaintext.len() / AES_BLOCK_SIZE;
+        let num_blocks = ciphertext.len() / AES_BLOCK_SIZE;
         self.ffi_decrypt(num_blocks, plaintext, ciphertext);
 
         Ok(())
@@ -461,6 +461,11 @@ mod test {
             cipher.decrypt([0u8; 64].as_slice(), [0u8; 32].as_mut_slice()),
             Err(Error::InsufficientBufferSize)
         ));
+        assert!(matches!(cipher.decrypt([0u8; 0].as_slice(), [0u8; 32768].as_mut_slice()), Ok(())));
+        assert!(matches!(
+            cipher.decrypt([0u8; crate::AES_BLOCK_SIZE].as_slice(), [0u8; 32768].as_mut_slice()),
+            Ok(())
+        ));
 
         let cipher = Aes128Cbc::new([0u8; 16].as_slice(), [0u8; 16].as_slice()).unwrap();
         assert!(matches!(
@@ -474,6 +479,11 @@ mod test {
         assert!(matches!(
             cipher.decrypt([0u8; 64].as_slice(), [0u8; 32].as_mut_slice()),
             Err(Error::InsufficientBufferSize)
+        ));
+        assert!(matches!(cipher.decrypt([0u8; 0].as_slice(), [0u8; 32768].as_mut_slice()), Ok(())));
+        assert!(matches!(
+            cipher.decrypt([0u8; crate::AES_BLOCK_SIZE].as_slice(), [0u8; 32768].as_mut_slice()),
+            Ok(())
         ));
     }
 }
