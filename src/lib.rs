@@ -12,10 +12,17 @@
 //! The crate also provides a Padding utility implementation to help the user prepare, pad and unpad
 //! buffers. Zero Padding and PKCS7 padding implementations are provided
 //!
+//! # Security
+//!
+//! CBC provides no authentication. Callers MUST authenticate the IV and ciphertext
+//! (and any protocol metadata) before decryption or unpadding. Use encrypt-then-MAC
+//! with independent encryption and MAC keys, or an authenticated-encryption library.
+//! Never expose padding results for unauthenticated input; even constant-time
+//! padding validation still reveals validity through its return value.
+//!
 //! # Examples
 //!
 //! ```
-//! extern crate hex_conservative;
 //! use hex_conservative::FromHex;
 //! use ctaes_rs::{Padding, Pkcs7, AesCbcBlockCipher, Aes128Cbc};
 //!
@@ -23,18 +30,19 @@
 //! let iv = <[u8; 16]>::from_hex("000102030405060708090a0b0c0d0e0f").unwrap();
 //! let message = <Vec<u8>>::from_hex("6bc1bee22e409f96e93d7e117393172aae2d8a571e03ac9c9eb76fac45af8e5130c81c46a35ce411e5fbc1191a0a52eff69f2445df4f9b17ad2b417be66c3710").unwrap();
 //!
-//! let padded_buffer_length = Pkcs7::padded_buffer_length(message.len(), 16);
+//! let padded_buffer_length = Pkcs7::padded_buffer_length(message.len(), 16).unwrap();
 //! let mut plaintext = vec![0u8; padded_buffer_length];
 //! plaintext[0..message.len()].copy_from_slice(message.as_slice());
 //! Pkcs7::pad(plaintext.as_mut_slice(), message.len(), 16).unwrap();
 //! let mut ciphertext = vec![0u8; padded_buffer_length];
 //!
-//! let cipher = Aes128Cbc::new(key.as_slice(), iv.as_slice()).unwrap();
+//! let mut cipher = Aes128Cbc::new(key.as_slice(), iv.as_slice()).unwrap();
 //! cipher.encrypt(plaintext.as_slice(), ciphertext.as_mut_slice()).unwrap();
 //!
 //! let mut deciphered = vec![0u8; padded_buffer_length];
-//! cipher.decrypt(ciphertext.as_slice(), deciphered.as_mut_slice()).unwrap();
-//! let unpadded_result = Pkcs7::unpad(deciphered.as_slice()).unwrap();
+//! let mut decipher = Aes128Cbc::new(key.as_slice(), iv.as_slice()).unwrap();
+//! decipher.decrypt(ciphertext.as_slice(), deciphered.as_mut_slice()).unwrap();
+//! let unpadded_result = Pkcs7::unpad_with_block_size(deciphered.as_slice(), 16).unwrap();
 //! assert_eq!(message.as_slice(), unpadded_result);
 //! ```
 //!
@@ -42,6 +50,7 @@
 extern crate thiserror;
 extern crate zeroize;
 
+mod constant_time;
 #[allow(non_snake_case)]
 mod ctaes_ffi;
 mod error;
@@ -80,6 +89,9 @@ pub trait AesBlockCipher: FfiAesCipher {
     }
 
     /// Decrypt the contents of `ciphertext` and place the result in the `plaintext` out parameter
+    ///
+    /// `ciphertext` must contain whole AES blocks. `plaintext` must be at least as long
+    /// as `ciphertext`; any remaining bytes in `plaintext` are left unchanged.
     fn decrypt(&self, ciphertext: &[u8], plaintext: &mut [u8]) -> Result<(), Error> {
         if ciphertext.len() % AES_BLOCK_SIZE != 0 {
             return Err(Error::NonBlockSizeAlignedBuffer);
@@ -222,8 +234,21 @@ impl Aes256 {
 impl AesBlockCipher for Aes256 {}
 
 /// Trait that implements the common `encrypt` and `decrypt` methods for all AES-CBC ciphers
+///
+/// This is unauthenticated encryption. Callers MUST verify a MAC over the IV,
+/// ciphertext, and relevant metadata before decrypting or unpadding.
+///
+/// Each instance holds one CBC chain. Successful calls advance its IV to the last
+/// ciphertext block; empty inputs and rejected calls leave the chain unchanged.
+/// Use separate instances initialized with the same key and IV for encryption
+/// and decryption of a message. For each independent message, create a new
+/// instance with a fresh, unpredictable IV; continuing a chain is for chunks of
+/// the same message only.
 pub trait AesCbcBlockCipher: FfiAesCbcCipher {
-    fn encrypt(&self, plaintext: &[u8], ciphertext: &mut [u8]) -> Result<(), Error> {
+    /// Encrypt whole blocks, advancing the CBC chain.
+    ///
+    /// Output must be at least as long as input; trailing output bytes are unchanged.
+    fn encrypt(&mut self, plaintext: &[u8], ciphertext: &mut [u8]) -> Result<(), Error> {
         if plaintext.len() % AES_BLOCK_SIZE != 0 {
             return Err(Error::NonBlockSizeAlignedBuffer);
         }
@@ -237,7 +262,11 @@ pub trait AesCbcBlockCipher: FfiAesCbcCipher {
         Ok(())
     }
 
-    fn decrypt(&self, ciphertext: &[u8], plaintext: &mut [u8]) -> Result<(), Error> {
+    /// Decrypt the contents of `ciphertext` and place the result in `plaintext`.
+    ///
+    /// `ciphertext` must contain whole AES blocks. `plaintext` must be at least as long
+    /// as `ciphertext`; any remaining bytes in `plaintext` are left unchanged.
+    fn decrypt(&mut self, ciphertext: &[u8], plaintext: &mut [u8]) -> Result<(), Error> {
         if ciphertext.len() % AES_BLOCK_SIZE != 0 {
             return Err(Error::NonBlockSizeAlignedBuffer);
         }
@@ -253,13 +282,12 @@ pub trait AesCbcBlockCipher: FfiAesCbcCipher {
 }
 
 /// 128-bit AES-CBC cipher
-pub struct Aes128Cbc<'a> {
-    key: &'a [u8],
-    iv: &'a [u8],
+pub struct Aes128Cbc {
+    context: AES128_CBC_ctx,
 }
 
-impl<'a> Aes128Cbc<'a> {
-    pub fn new(key: &'a [u8], iv: &'a [u8]) -> Result<Self, Error> {
+impl Aes128Cbc {
+    pub fn new(key: &[u8], iv: &[u8]) -> Result<Self, Error> {
         if key.len() != AES128_KEY_LENGTH {
             return Err(Error::KeyIncorrectLength(AES128_KEY_LENGTH));
         }
@@ -267,17 +295,19 @@ impl<'a> Aes128Cbc<'a> {
             return Err(Error::IvIncorrectLength);
         }
 
-        Ok(Self { key, iv })
+        let mut context = AES128_CBC_ctx::default();
+        unsafe {
+            AES128_CBC_init(&mut context, key.as_ptr(), iv.as_ptr());
+        }
+        Ok(Self { context })
     }
 }
 
-impl FfiAesCbcCipher for Aes128Cbc<'_> {
-    fn ffi_decrypt(&self, num_blocks: usize, plaintext: &mut [u8], ciphertext: &[u8]) {
-        let mut context = AES128_CBC_ctx::default();
+impl FfiAesCbcCipher for Aes128Cbc {
+    fn ffi_decrypt(&mut self, num_blocks: usize, plaintext: &mut [u8], ciphertext: &[u8]) {
         unsafe {
-            AES128_CBC_init(&mut context, self.key.as_ptr(), self.iv.as_ptr());
             AES128_CBC_decrypt(
-                &mut context,
+                &mut self.context,
                 num_blocks,
                 plaintext.as_mut_ptr(),
                 ciphertext.as_ptr(),
@@ -285,12 +315,10 @@ impl FfiAesCbcCipher for Aes128Cbc<'_> {
         }
     }
 
-    fn ffi_encrypt(&self, num_blocks: usize, ciphertext: &mut [u8], plaintext: &[u8]) {
-        let mut context = AES128_CBC_ctx::default();
+    fn ffi_encrypt(&mut self, num_blocks: usize, ciphertext: &mut [u8], plaintext: &[u8]) {
         unsafe {
-            AES128_CBC_init(&mut context, self.key.as_ptr(), self.iv.as_ptr());
             AES128_CBC_encrypt(
-                &mut context,
+                &mut self.context,
                 num_blocks,
                 ciphertext.as_mut_ptr(),
                 plaintext.as_ptr(),
@@ -299,16 +327,15 @@ impl FfiAesCbcCipher for Aes128Cbc<'_> {
     }
 }
 
-impl AesCbcBlockCipher for Aes128Cbc<'_> {}
+impl AesCbcBlockCipher for Aes128Cbc {}
 
 /// 192-bit AES-CBC cipher
-pub struct Aes192Cbc<'a> {
-    key: &'a [u8],
-    iv: &'a [u8],
+pub struct Aes192Cbc {
+    context: AES192_CBC_ctx,
 }
 
-impl<'a> Aes192Cbc<'a> {
-    pub fn new(key: &'a [u8], iv: &'a [u8]) -> Result<Self, Error> {
+impl Aes192Cbc {
+    pub fn new(key: &[u8], iv: &[u8]) -> Result<Self, Error> {
         if key.len() != AES192_KEY_LENGTH {
             return Err(Error::KeyIncorrectLength(AES192_KEY_LENGTH));
         }
@@ -316,17 +343,19 @@ impl<'a> Aes192Cbc<'a> {
             return Err(Error::IvIncorrectLength);
         }
 
-        Ok(Self { key, iv })
+        let mut context = AES192_CBC_ctx::default();
+        unsafe {
+            AES192_CBC_init(&mut context, key.as_ptr(), iv.as_ptr());
+        }
+        Ok(Self { context })
     }
 }
 
-impl FfiAesCbcCipher for Aes192Cbc<'_> {
-    fn ffi_decrypt(&self, num_blocks: usize, plaintext: &mut [u8], ciphertext: &[u8]) {
-        let mut context = AES192_CBC_ctx::default();
+impl FfiAesCbcCipher for Aes192Cbc {
+    fn ffi_decrypt(&mut self, num_blocks: usize, plaintext: &mut [u8], ciphertext: &[u8]) {
         unsafe {
-            AES192_CBC_init(&mut context, self.key.as_ptr(), self.iv.as_ptr());
             AES192_CBC_decrypt(
-                &mut context,
+                &mut self.context,
                 num_blocks,
                 plaintext.as_mut_ptr(),
                 ciphertext.as_ptr(),
@@ -334,12 +363,10 @@ impl FfiAesCbcCipher for Aes192Cbc<'_> {
         }
     }
 
-    fn ffi_encrypt(&self, num_blocks: usize, ciphertext: &mut [u8], plaintext: &[u8]) {
-        let mut context = AES192_CBC_ctx::default();
+    fn ffi_encrypt(&mut self, num_blocks: usize, ciphertext: &mut [u8], plaintext: &[u8]) {
         unsafe {
-            AES192_CBC_init(&mut context, self.key.as_ptr(), self.iv.as_ptr());
             AES192_CBC_encrypt(
-                &mut context,
+                &mut self.context,
                 num_blocks,
                 ciphertext.as_mut_ptr(),
                 plaintext.as_ptr(),
@@ -348,16 +375,15 @@ impl FfiAesCbcCipher for Aes192Cbc<'_> {
     }
 }
 
-impl AesCbcBlockCipher for Aes192Cbc<'_> {}
+impl AesCbcBlockCipher for Aes192Cbc {}
 
 /// 256-bit AES-CBC cipher
-pub struct Aes256Cbc<'a> {
-    key: &'a [u8],
-    iv: &'a [u8],
+pub struct Aes256Cbc {
+    context: AES256_CBC_ctx,
 }
 
-impl<'a> Aes256Cbc<'a> {
-    pub fn new(key: &'a [u8], iv: &'a [u8]) -> Result<Self, Error> {
+impl Aes256Cbc {
+    pub fn new(key: &[u8], iv: &[u8]) -> Result<Self, Error> {
         if key.len() != AES256_KEY_LENGTH {
             return Err(Error::KeyIncorrectLength(AES256_KEY_LENGTH));
         }
@@ -365,17 +391,19 @@ impl<'a> Aes256Cbc<'a> {
             return Err(Error::IvIncorrectLength);
         }
 
-        Ok(Self { key, iv })
+        let mut context = AES256_CBC_ctx::default();
+        unsafe {
+            AES256_CBC_init(&mut context, key.as_ptr(), iv.as_ptr());
+        }
+        Ok(Self { context })
     }
 }
 
-impl FfiAesCbcCipher for Aes256Cbc<'_> {
-    fn ffi_decrypt(&self, num_blocks: usize, plaintext: &mut [u8], ciphertext: &[u8]) {
-        let mut context = AES256_CBC_ctx::default();
+impl FfiAesCbcCipher for Aes256Cbc {
+    fn ffi_decrypt(&mut self, num_blocks: usize, plaintext: &mut [u8], ciphertext: &[u8]) {
         unsafe {
-            AES256_CBC_init(&mut context, self.key.as_ptr(), self.iv.as_ptr());
             AES256_CBC_decrypt(
-                &mut context,
+                &mut self.context,
                 num_blocks,
                 plaintext.as_mut_ptr(),
                 ciphertext.as_ptr(),
@@ -383,12 +411,10 @@ impl FfiAesCbcCipher for Aes256Cbc<'_> {
         }
     }
 
-    fn ffi_encrypt(&self, num_blocks: usize, ciphertext: &mut [u8], plaintext: &[u8]) {
-        let mut context = AES256_CBC_ctx::default();
+    fn ffi_encrypt(&mut self, num_blocks: usize, ciphertext: &mut [u8], plaintext: &[u8]) {
         unsafe {
-            AES256_CBC_init(&mut context, self.key.as_ptr(), self.iv.as_ptr());
             AES256_CBC_encrypt(
-                &mut context,
+                &mut self.context,
                 num_blocks,
                 ciphertext.as_mut_ptr(),
                 plaintext.as_ptr(),
@@ -397,7 +423,7 @@ impl FfiAesCbcCipher for Aes256Cbc<'_> {
     }
 }
 
-impl AesCbcBlockCipher for Aes256Cbc<'_> {}
+impl AesCbcBlockCipher for Aes256Cbc {}
 
 #[cfg(test)]
 mod test {
@@ -467,7 +493,7 @@ mod test {
             Ok(())
         ));
 
-        let cipher = Aes128Cbc::new([0u8; 16].as_slice(), [0u8; 16].as_slice()).unwrap();
+        let mut cipher = Aes128Cbc::new([0u8; 16].as_slice(), [0u8; 16].as_slice()).unwrap();
         assert!(matches!(
             cipher.encrypt([0u8; 33].as_slice(), [0u8; 33].as_mut_slice()),
             Err(Error::NonBlockSizeAlignedBuffer)

@@ -1,8 +1,8 @@
 /*********************************************************************
-* Copyright (c) 2023 Blockstream                                     *
-* Distributed under the MIT software license, see the accompanying   *
-* file COPYING or https://opensource.org/licenses/mit-license.php.   *
-**********************************************************************/
+ * Copyright (c) 2023 Blockstream                                     *
+ * Distributed under the MIT software license, see the accompanying   *
+ * file COPYING or https://opensource.org/licenses/mit-license.php.   *
+ **********************************************************************/
 
 extern crate hex_conservative;
 
@@ -186,32 +186,121 @@ fn test_aes_cbc_ciphers() {
     for test_vector in aes_cbc_test_vectors() {
         match test_vector.key.len() {
             16 => {
-                let cipher =
-                    Aes128Cbc::new(test_vector.key.as_slice(), test_vector.iv.as_slice()).unwrap();
-                test_cbc_cipher(cipher, &test_vector.plaintext, &test_vector.ciphertext);
+                test_cbc_cipher(
+                    || Aes128Cbc::new(&test_vector.key, &test_vector.iv).unwrap(),
+                    &test_vector.plaintext,
+                    &test_vector.ciphertext,
+                );
             }
             24 => {
-                let cipher =
-                    Aes192Cbc::new(test_vector.key.as_slice(), test_vector.iv.as_slice()).unwrap();
-                test_cbc_cipher(cipher, &test_vector.plaintext, &test_vector.ciphertext);
+                test_cbc_cipher(
+                    || Aes192Cbc::new(&test_vector.key, &test_vector.iv).unwrap(),
+                    &test_vector.plaintext,
+                    &test_vector.ciphertext,
+                );
             }
             32 => {
-                let cipher =
-                    Aes256Cbc::new(test_vector.key.as_slice(), test_vector.iv.as_slice()).unwrap();
-                test_cbc_cipher(cipher, &test_vector.plaintext, &test_vector.ciphertext);
+                test_cbc_cipher(
+                    || Aes256Cbc::new(&test_vector.key, &test_vector.iv).unwrap(),
+                    &test_vector.plaintext,
+                    &test_vector.ciphertext,
+                );
             }
             _ => panic!("Invalid key length"),
         };
     }
 }
 
-fn test_cbc_cipher<T: AesCbcBlockCipher>(cipher: T, plaintext: &Vec<u8>, ciphertext: &Vec<u8>) {
+fn test_cbc_cipher<T: AesCbcBlockCipher, F: Fn() -> T>(
+    new: F,
+    plaintext: &Vec<u8>,
+    ciphertext: &Vec<u8>,
+) {
+    check_cbc_stream(&new, plaintext, ciphertext);
+    let mut cipher = new();
+    let mut decipher = new();
     let mut ciphered = vec![0u8; plaintext.len()];
     let mut deciphered = vec![0u8; plaintext.len()];
 
     cipher.encrypt(plaintext.as_slice(), ciphered.as_mut_slice()).unwrap();
     assert_eq!(ciphered.as_slice(), ciphertext.as_slice());
 
-    cipher.decrypt(ciphered.as_slice(), deciphered.as_mut_slice()).unwrap();
+    decipher.decrypt(ciphered.as_slice(), deciphered.as_mut_slice()).unwrap();
     assert_eq!(deciphered.as_slice(), plaintext.as_slice());
+}
+
+// Exercise every block boundary against the known-answer vectors above, including
+// multi-block calls whose next IV must be the last (not first) ciphertext block.
+fn check_cbc_stream<T: AesCbcBlockCipher, F: Fn() -> T>(
+    new: F,
+    plaintext: &[u8],
+    ciphertext: &[u8],
+) {
+    // Process two chunks at every block boundary, including empty end chunks.
+    for split in (0..=plaintext.len()).step_by(16) {
+        let mut encryptor = new();
+        let mut decryptor = new();
+        let mut encrypted = vec![0; plaintext.len()];
+        let mut decrypted = vec![0; plaintext.len()];
+        // Each direction keeps its own chain across both calls.
+        for &(start, end) in &[(0, split), (split, plaintext.len())] {
+            // Neither empty nor invalid calls may alter the chain or output.
+            for cipher in &mut [&mut encryptor, &mut decryptor] {
+                let mut untouched = [0xa5; 17];
+                cipher.encrypt(&[], &mut untouched).unwrap();
+                cipher.decrypt(&[], &mut untouched).unwrap();
+                assert!(matches!(
+                    cipher.encrypt(&[0; 1], &mut untouched),
+                    Err(ctaes_rs::Error::NonBlockSizeAlignedBuffer)
+                ));
+                assert!(matches!(
+                    cipher.decrypt(&[0; 1], &mut untouched),
+                    Err(ctaes_rs::Error::NonBlockSizeAlignedBuffer)
+                ));
+                assert!(matches!(
+                    cipher.encrypt(&[0; 32], &mut untouched),
+                    Err(ctaes_rs::Error::InsufficientBufferSize)
+                ));
+                assert!(matches!(
+                    cipher.decrypt(&[0; 32], &mut untouched),
+                    Err(ctaes_rs::Error::InsufficientBufferSize)
+                ));
+                assert_eq!(untouched, [0xa5; 17]);
+            }
+            // Extra output bytes stay untouched and must not affect IV advancement.
+            let mut output = vec![0xa5; end - start + 17];
+            encryptor.encrypt(&plaintext[start..end], &mut output).unwrap();
+            encrypted[start..end].copy_from_slice(&output[..end - start]);
+            assert!(output[end - start..].iter().all(|&b| b == 0xa5));
+            decryptor.decrypt(&ciphertext[start..end], &mut output).unwrap();
+            decrypted[start..end].copy_from_slice(&output[..end - start]);
+            assert!(output[end - start..].iter().all(|&b| b == 0xa5));
+        }
+        // Chunked results must match the known-answer vectors.
+        assert_eq!(encrypted, ciphertext);
+        assert_eq!(decrypted, plaintext);
+    }
+
+    // Verify chaining over several consecutive single-block calls.
+    let mut encryptor = new();
+    let mut decryptor = new();
+    for (plain, encrypted) in plaintext.chunks(16).zip(ciphertext.chunks(16)) {
+        let mut output = [0; 16];
+        encryptor.encrypt(plain, &mut output).unwrap();
+        assert_eq!(output.as_ref(), encrypted);
+        decryptor.decrypt(encrypted, &mut output).unwrap();
+        assert_eq!(output.as_ref(), plain);
+    }
+
+    // Identical plaintext blocks must match one-shot encryption across calls,
+    // while producing different ciphertext blocks for this test input.
+    let repeated = [0x42; 32];
+    let mut expected = [0; 32];
+    new().encrypt(&repeated, &mut expected).unwrap();
+    let mut encryptor = new();
+    let mut actual = [0; 32];
+    encryptor.encrypt(&repeated[..16], &mut actual[..16]).unwrap();
+    encryptor.encrypt(&repeated[16..], &mut actual[16..]).unwrap();
+    assert_eq!(actual, expected);
+    assert_ne!(actual[..16], actual[16..]);
 }

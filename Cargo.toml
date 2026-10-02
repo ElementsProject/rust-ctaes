@@ -2,7 +2,7 @@
 name = "ctaes-rs"
 version = "0.1.2"
 authors = ["Philip Robinson <probinson@blockstream.com>"]
-license = "MIT"
+license = "MIT AND BSD-3-Clause"
 homepage = "https://github.com/ElementsProject/rust-ctaes/"
 repository = "https://github.com/ElementsProject/rust-ctaes/"
 description = "Rust bindings and API for CTAES a constant-time AES implementation from Bitcoin Core https://github.com/bitcoin-core/ctaes"
