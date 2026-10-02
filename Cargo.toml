@@ -1,6 +1,6 @@
 [package]
 name = "ctaes-rs"
-version = "0.1.2"
+version = "0.2.0"
 authors = ["Philip Robinson <probinson@blockstream.com>"]
 license = "MIT AND BSD-3-Clause"
 homepage = "https://github.com/ElementsProject/rust-ctaes/"
