@@ -9,6 +9,7 @@ description = "Rust bindings and API for CTAES a constant-time AES implementatio
 keywords = [ "crypto", "bitcoin", "aes" ]
 readme = "README.md"
 edition = "2021"
+rust-version = "1.63"
 
 [dependencies]
 thiserror = "2"
