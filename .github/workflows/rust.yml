@@ -42,24 +42,34 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      
+
+      # cargo-valgrind's dependencies no longer build on the MSRV, so install
+      # the tool with stable and only use 1.63.0 for building/testing the crate.
+      - name: "Select stable toolchain for tooling"
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup
+        run: |
+          sudo apt-get update && sudo apt-get install -y valgrind
+          cargo install cargo-valgrind
+
+      # Use stable cargo's MSRV-aware resolver (driven by `rust-version` in
+      # Cargo.toml) to pick dependency versions that build on 1.63.0.
+      - name: "Generate MSRV-compatible lockfile"
+        run: cargo generate-lockfile
+        env:
+          CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS: fallback
+
       - name: "Select toolchain"
         uses: dtolnay/rust-toolchain@1.63.0
 
       - name: "Rust Version"
         run: rustc --version
 
-      - name: Setup
-        run: |
-          sudo apt-get update && sudo apt-get install -y valgrind
-          cargo install cargo-valgrind --version 2.0.0
-          
       - name: Run tests
         run: |
-          rm Cargo.lock
-          cargo +1.63.0 generate-lockfile
-          cargo valgrind test
-          cargo test
+          cargo valgrind test --locked
+          cargo test --locked
           
       - name: Upload artifacts
         uses: actions/upload-artifact@v4

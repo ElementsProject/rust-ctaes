@@ -15,6 +15,10 @@ pub enum Error {
     NonBlockSizeAlignedBuffer,
     #[error("Output buffer is not big enough to hold the result of processing input")]
     InsufficientBufferSize,
+    #[error("Invalid padding block size")]
+    InvalidBlockSize,
+    #[error("Padded buffer length exceeds usize::MAX")]
+    PaddedLengthOverflow,
     #[error("Buffer not large enough to accomodate padded buffer")]
     PaddedBufferTooSmall,
     #[error("Unable to unpad buffer: {0}")]

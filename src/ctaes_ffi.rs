@@ -193,6 +193,6 @@ pub trait FfiAesCipher {
 
 /// A sealed trait defining the interface of an AES-CBC cipher
 pub trait FfiAesCbcCipher: Sized {
-    fn ffi_decrypt(&self, num_blocks: usize, plaintext: &mut [u8], ciphertext: &[u8]);
-    fn ffi_encrypt(&self, num_blocks: usize, ciphertext: &mut [u8], plaintext: &[u8]);
+    fn ffi_decrypt(&mut self, num_blocks: usize, plaintext: &mut [u8], ciphertext: &[u8]);
+    fn ffi_encrypt(&mut self, num_blocks: usize, ciphertext: &mut [u8], plaintext: &[u8]);
 }

@@ -2,13 +2,14 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or https://opensource.org/licenses/mit-license.php.
 
-use crate::Error;
+use crate::constant_time::{ConstantTimeEq, ConstantTimeLess};
+use crate::{Error, AES_BLOCK_SIZE};
 
 /// Trait defining interface for a Padding implementation
 pub trait Padding {
     /// Given a length of data and block_size return the minimum size of a buffer required to hold
     /// the padded data
-    fn padded_buffer_length(data_length: usize, block_size: usize) -> usize;
+    fn padded_buffer_length(data_length: usize, block_size: usize) -> Result<usize, Error>;
     /// Take a buffer containing data of specified length and based on the blocksize apply the padding
     /// to the buffer. The returned slice will reference the slice of padded data in the buffer
     fn pad(buffer: &mut [u8], data_length: usize, block_size: usize) -> Result<&[u8], Error>;
@@ -23,16 +24,17 @@ pub trait Padding {
 pub enum ZeroPadding {}
 
 impl Padding for ZeroPadding {
-    fn padded_buffer_length(data_length: usize, block_size: usize) -> usize {
-        if data_length % block_size == 0 {
-            data_length
-        } else {
-            block_size + block_size * (data_length / block_size)
+    fn padded_buffer_length(data_length: usize, block_size: usize) -> Result<usize, Error> {
+        if block_size == 0 {
+            return Err(Error::InvalidBlockSize);
         }
+        let remainder = data_length % block_size;
+        let padding_length = if remainder == 0 { 0 } else { block_size - remainder };
+        data_length.checked_add(padding_length).ok_or(Error::PaddedLengthOverflow)
     }
 
     fn pad(buffer: &mut [u8], data_length: usize, block_size: usize) -> Result<&[u8], Error> {
-        let padded_length = Self::padded_buffer_length(data_length, block_size);
+        let padded_length = Self::padded_buffer_length(data_length, block_size)?;
         if buffer.len() < padded_length {
             return Err(Error::PaddedBufferTooSmall);
         }
@@ -44,28 +46,85 @@ impl Padding for ZeroPadding {
         Ok(&buffer[0..padded_length])
     }
 
+    /// Remove trailing zero padding. Empty input returns an unpadding error.
     fn unpad(buffer: &[u8]) -> Result<&[u8], Error> {
-        let mut n = buffer.len() - 1;
-        while n > 0 {
-            if buffer[n] != 0 {
-                break;
-            }
-            n -= 1;
+        if buffer.is_empty() {
+            return Err(Error::UnpadError("Buffer to unpad is empty".to_string()));
         }
-        Ok(&buffer[0..=n])
+
+        let mut end = buffer.len();
+        while end > 0 && buffer[end - 1] == 0 {
+            end -= 1;
+        }
+        Ok(&buffer[..end])
     }
 }
 
-/// Implementation of the PKCS7 padding scheme
+/// Implementation of the PKCS7 padding scheme.
+///
+/// Padding validation does not authenticate a message. Verify its MAC before
+/// decrypting or unpadding, and never expose padding validity for unauthenticated
+/// input. `Padding::unpad` enforces the AES block size (16 bytes); use
+/// `unpad_with_block_size` for other block sizes.
 pub enum Pkcs7 {}
 
+impl Pkcs7 {
+    /// Validate PKCS7 padding, including block alignment and padding length bounds.
+    ///
+    /// For AES, pass 16. The block size must be in 1..=255.
+    /// All bytes in the final block are checked using constant-time comparisons
+    /// before returning padding validity. This is not a substitute for a MAC.
+    pub fn unpad_with_block_size(buffer: &[u8], block_size: usize) -> Result<&[u8], Error> {
+        if block_size == 0
+            || block_size > 255
+            || buffer.is_empty()
+            || buffer.len() % block_size != 0
+        {
+            return Err(Self::invalid_padding());
+        }
+        Self::validate_suffix(buffer, block_size)
+    }
+
+    fn invalid_padding() -> Error {
+        Error::UnpadError("Invalid PKCS7 padding".to_string())
+    }
+
+    fn validate_suffix(buffer: &[u8], scan_length: usize) -> Result<&[u8], Error> {
+        if buffer.is_empty() {
+            return Err(Self::invalid_padding());
+        }
+        let padding_length = buffer[buffer.len() - 1];
+        let pad = u16::from(padding_length);
+        // The padding length must be nonzero and must not exceed the scan length.
+        let mut valid = !padding_length.ct_eq(&0) & !(scan_length as u16).ct_lt(&pad);
+
+        // The scan length and addresses depend only on public buffer/block sizes.
+        // Accumulate all mismatches without branching on decrypted byte values.
+        for (offset, byte) in buffer.iter().rev().take(scan_length).enumerate() {
+            let is_padding = (offset as u16).ct_lt(&pad);
+            valid &= !is_padding | byte.ct_eq(&padding_length);
+        }
+
+        // Only the final validity decision and returned length depend on padding.
+        if bool::from(valid) {
+            Ok(&buffer[..buffer.len() - padding_length as usize])
+        } else {
+            Err(Self::invalid_padding())
+        }
+    }
+}
+
 impl Padding for Pkcs7 {
-    fn padded_buffer_length(data_length: usize, block_size: usize) -> usize {
-        block_size + block_size * (data_length / block_size)
+    fn padded_buffer_length(data_length: usize, block_size: usize) -> Result<usize, Error> {
+        if block_size == 0 || block_size > 255 {
+            return Err(Error::InvalidBlockSize);
+        }
+        let padding_length = block_size - data_length % block_size;
+        data_length.checked_add(padding_length).ok_or(Error::PaddedLengthOverflow)
     }
 
     fn pad(buffer: &mut [u8], data_length: usize, block_size: usize) -> Result<&[u8], Error> {
-        let padded_length = Self::padded_buffer_length(data_length, block_size);
+        let padded_length = Self::padded_buffer_length(data_length, block_size)?;
         if buffer.len() < padded_length {
             return Err(Error::PaddedBufferTooSmall);
         }
@@ -76,21 +135,12 @@ impl Padding for Pkcs7 {
         Ok(&buffer[0..padded_length])
     }
 
+    /// Validate and remove PKCS7 padding for AES's 16-byte block size.
+    ///
+    /// Requires nonempty, block-aligned input and 1..=16 matching padding bytes.
+    /// For data padded with another block size, use `unpad_with_block_size`.
     fn unpad(buffer: &[u8]) -> Result<&[u8], Error> {
-        let padding_length = match buffer.last() {
-            None => return Err(Error::UnpadError("Buffer to unpad is empty".to_string())),
-            Some(l) => *l,
-        };
-        if buffer.len() < padding_length as usize {
-            return Err(Error::UnpadError(
-                "Buffer smaller than PKCS7 recorded padded length".to_string(),
-            ));
-        }
-        if padding_length == 0 {
-            return Err(Error::UnpadError("PKCS7 padding length can't be zero".to_string()));
-        }
-
-        Ok(&buffer[0..buffer.len() - padding_length as usize])
+        Self::unpad_with_block_size(buffer, AES_BLOCK_SIZE)
     }
 }
 
@@ -100,10 +150,34 @@ mod test {
     use crate::Error;
 
     #[test]
+    fn test_zero_padding_unpad_empty() {
+        assert!(matches!(ZeroPadding::unpad(&[]), Err(Error::UnpadError(_))));
+    }
+
+    #[test]
+    fn test_zero_padding_unpad_boundaries() {
+        for length in 1..=32 {
+            let mut buffer = vec![0; length];
+            assert_eq!(ZeroPadding::unpad(&buffer).unwrap(), &[]);
+
+            // Preserve the last nonzero byte at every possible position,
+            // including the first byte and a buffer with no trailing padding.
+            for position in 0..length {
+                buffer[position] = 0x42;
+                assert_eq!(ZeroPadding::unpad(&buffer).unwrap(), &buffer[..position + 1]);
+                buffer[position] = 0;
+            }
+        }
+    }
+
+    #[test]
     fn test_zero_padding() {
         const BLOCK_SIZE: usize = 16;
-        assert_eq!(ZeroPadding::padded_buffer_length(20, BLOCK_SIZE), 2 * BLOCK_SIZE);
-        assert_eq!(ZeroPadding::padded_buffer_length(2 * BLOCK_SIZE, BLOCK_SIZE), 2 * BLOCK_SIZE);
+        assert_eq!(ZeroPadding::padded_buffer_length(20, BLOCK_SIZE).unwrap(), 2 * BLOCK_SIZE);
+        assert_eq!(
+            ZeroPadding::padded_buffer_length(2 * BLOCK_SIZE, BLOCK_SIZE).unwrap(),
+            2 * BLOCK_SIZE
+        );
 
         const DATA_LENGTH: usize = 22;
         let mut buffer = [2u8; 2 * BLOCK_SIZE + 1];
@@ -132,10 +206,34 @@ mod test {
     }
 
     #[test]
+    fn test_pkcs7_unpad_invalid() {
+        let is_invalid = |buffer: &[u8]| matches!(Pkcs7::unpad(buffer), Err(Error::UnpadError(_)));
+        let mut buffer = [0u8; 16];
+        // Zero padding length
+        assert!(is_invalid(&buffer));
+        // Padding length larger than block size
+        buffer[15] = 17;
+        assert!(is_invalid(&buffer));
+        // Mismatched padding byte
+        buffer[12..].fill(4);
+        buffer[12] = 3;
+        assert!(is_invalid(&buffer));
+        // Valid padding of every length
+        for padding_length in 1..=16u8 {
+            buffer.fill(0xaa);
+            buffer[16 - padding_length as usize..].fill(padding_length);
+            assert_eq!(Pkcs7::unpad(&buffer).unwrap().len(), 16 - padding_length as usize);
+        }
+    }
+
+    #[test]
     fn test_pkcs7_padding() {
         const BLOCK_SIZE: usize = 16;
-        assert_eq!(Pkcs7::padded_buffer_length(20, BLOCK_SIZE), 2 * BLOCK_SIZE);
-        assert_eq!(Pkcs7::padded_buffer_length(2 * BLOCK_SIZE, BLOCK_SIZE), 3 * BLOCK_SIZE);
+        assert_eq!(Pkcs7::padded_buffer_length(20, BLOCK_SIZE).unwrap(), 2 * BLOCK_SIZE);
+        assert_eq!(
+            Pkcs7::padded_buffer_length(2 * BLOCK_SIZE, BLOCK_SIZE).unwrap(),
+            3 * BLOCK_SIZE
+        );
 
         const DATA_LENGTH: usize = 22;
         let mut buffer = [2u8; 2 * BLOCK_SIZE + 1];
